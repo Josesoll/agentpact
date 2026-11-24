@@ -27,4 +27,9 @@ fs.writeFileSync(
   path.join(__dirname, '..', 'build', 'AgentPact.json'),
   JSON.stringify({ abi: c.abi, bytecode: c.evm.bytecode.object }, null, 2)
 );
+// Standard JSON input, for one-shot source verification on BscScan.
+fs.writeFileSync(
+  path.join(__dirname, '..', 'build', 'standard-input.json'),
+  JSON.stringify(input, null, 2)
+);
 console.log('AgentPact compiled OK, bytecode bytes:', c.evm.bytecode.object.length / 2);
