@@ -292,4 +292,27 @@ contract AgentPact {
             job.state
         );
     }
+
+    /// @notice Ids of jobs still open for delivery (state Funded), newest
+    ///         first, capped at `maxResults`. Lets an agent discover work in
+    ///         a single call, without an indexer or a website.
+    function openJobIds(uint256 maxResults) external view returns (uint256[] memory ids) {
+        uint256 total = jobs.length;
+        uint256 count = 0;
+        for (uint256 i = 0; i < total && count < maxResults; i++) {
+            if (jobs[total - 1 - i].state == JobState.Funded) {
+                count++;
+            }
+        }
+        ids = new uint256[](count);
+        uint256 idx = 0;
+        for (uint256 i = 0; i < total && idx < count; i++) {
+            uint256 jobId2 = total - 1 - i;
+            if (jobs[jobId2].state == JobState.Funded) {
+                ids[idx] = jobId2;
+                idx++;
+            }
+        }
+        return ids;
+    }
 }

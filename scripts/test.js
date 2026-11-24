@@ -116,11 +116,14 @@ async function main() {
   ok((await provider.getBalance(escrowAddr)) === oneBnb, 'escrow holds 1 BNB');
   const job0 = await escrow.getJob(0);
   ok(job0[4] === 'Write a market report' && Number(job0[7]) === 0, 'getJob reads back description and Funded state');
+  const open1 = await escrow.openJobIds(10);
+  ok(open1.length === 1 && open1[0] === 0n, 'openJobIds lists the funded job in one call');
   await send('deliver job 0', escrow.connect(providerAgent).markDelivered(0));
   const provBefore = await provider.getBalance(provAddr);
   await send('release job 0', escrow.connect(client).release(0));
   const provAfter = await provider.getBalance(provAddr);
   ok(provAfter - provBefore === oneBnb, 'provider received exactly 1 BNB on release');
+  ok((await escrow.openJobIds(10)).length === 0, 'openJobIds is empty once the job settles');
   let rep = await escrow.reputationOf(provAddr);
   ok(rep[0] === 1n, 'provider reputation: 1 completed job');
   rep = await escrow.reputationOf(clientAddr);
