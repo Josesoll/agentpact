@@ -9,6 +9,9 @@ const input = {
   sources: { 'AgentPact.sol': { content: src } },
   settings: {
     optimizer: { enabled: true, runs: 200 },
+    // Target Paris: no PUSH0/MCOPY — maximum compatibility across EVM
+    // environments (local test chains and BNB Chain alike).
+    evmVersion: 'paris',
     outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } },
   },
 };
