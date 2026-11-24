@@ -1,0 +1,155 @@
+// Local EVM end-to-end tests for AgentPact (ganache + ethers v6).
+// Covers: Agent ID gating, profile registry, BNB escrow lifecycle,
+// auto-claim after grace, refund after deadline, cancellation, ERC-20 jobs.
+const solc = require('solc');
+const fs = require('fs');
+const path = require('path');
+const ganache = require('ganache');
+const { ethers } = require('ethers');
+
+function compile(file) {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'contracts', file), 'utf8');
+  const input = {
+    language: 'Solidity',
+    sources: { [file]: { content: src } },
+    settings: {
+      optimizer: { enabled: true, runs: 200 },
+      outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } },
+    },
+  };
+  const out = JSON.parse(solc.compile(JSON.stringify(input)));
+  const errors = (out.errors || []).filter((e) => e.severity === 'error');
+  if (errors.length) {
+    errors.forEach((e) => console.error(e.formattedMessage));
+    process.exit(1);
+  }
+  return out.contracts[file];
+}
+
+let passed = 0;
+function ok(cond, label) {
+  if (!cond) {
+    console.error('FAIL:', label);
+    process.exit(1);
+  }
+  passed += 1;
+  console.log('ok -', label);
+}
+async function reverts(promise, label) {
+  try {
+    await promise;
+  } catch {
+    passed += 1;
+    console.log('ok -', label);
+    return;
+  }
+  console.error('FAIL (expected revert):', label);
+  process.exit(1);
+}
+
+async function main() {
+  const provider = new ethers.BrowserProvider(ganache.provider({ logging: { quiet: true } }));
+  const [deployer, client, providerAgent, stranger] = await Promise.all(
+    [0, 1, 2, 3].map((i) => provider.getSigner(i))
+  );
+
+  const mocks = compile('MockContracts.sol');
+  const pact = compile('AgentPact.sol');
+
+  const registry = await new ethers.ContractFactory(
+    mocks.MockRegistry.abi, mocks.MockRegistry.evm.bytecode.object, deployer
+  ).deploy();
+  const token = await new ethers.ContractFactory(
+    mocks.MockToken.abi, mocks.MockToken.evm.bytecode.object, deployer
+  ).deploy();
+  const escrow = await new ethers.ContractFactory(
+    pact.AgentPact.abi, pact.AgentPact.evm.bytecode.object, deployer
+  ).deploy(await registry.getAddress());
+
+  const escrowAddr = await escrow.getAddress();
+  const clientAddr = await client.getAddress();
+  const provAddr = await providerAgent.getAddress();
+  const strangerAddr = await stranger.getAddress();
+
+  // client and provider hold Agent IDs; stranger does not
+  await registry.setHolder(clientAddr, true);
+  await registry.setHolder(provAddr, true);
+
+  // 1. gating
+  await reverts(
+    escrow.connect(stranger).registerProfile('X', 'none', ''),
+    'non-holder cannot register a profile'
+  );
+  await reverts(
+    escrow.connect(client).createJob(strangerAddr, ethers.ZeroAddress, ethers.parseEther('0.1'), 'job', 9999999999, { value: ethers.parseEther('0.1') }),
+    'non-holder cannot be hired as provider'
+  );
+
+  // 2. profiles
+  await escrow.connect(client).registerProfile('BuyerBot', 'research, writing', 'https://example.com/client');
+  await escrow.connect(providerAgent).registerProfile('MakerBot', 'coding, design', 'https://example.com/provider');
+  ok((await escrow.registeredCount()) === 2n, 'two agents registered');
+
+  const now = (await provider.getBlock('latest')).timestamp;
+  const in2days = now + 2 * 24 * 3600;
+
+  // 3. BNB job: create -> deliver -> release
+  const oneBnb = ethers.parseEther('1');
+  await escrow.connect(client).createJob(provAddr, ethers.ZeroAddress, oneBnb, 'Write a market report', in2days, { value: oneBnb });
+  ok((await provider.getBalance(escrowAddr)) === oneBnb, 'escrow holds 1 BNB');
+  await escrow.connect(providerAgent).markDelivered(0);
+  const provBefore = await provider.getBalance(provAddr);
+  await escrow.connect(client).release(0);
+  const provAfter = await provider.getBalance(provAddr);
+  ok(provAfter - provBefore === oneBnb, 'provider received exactly 1 BNB on release');
+  let rep = await escrow.reputationOf(provAddr);
+  ok(rep[0] === 1n, 'provider reputation: 1 completed job');
+  rep = await escrow.reputationOf(clientAddr);
+  ok(rep[1] === 1n, 'client reputation: 1 funded job');
+
+  // 4. auto-claim after delivery + 3 days of silence
+  await escrow.connect(client).createJob(provAddr, ethers.ZeroAddress, oneBnb, 'Design a logo', in2days, { value: oneBnb });
+  await escrow.connect(providerAgent).markDelivered(1);
+  await reverts(escrow.connect(providerAgent).claimAfterDelivery(1), 'cannot claim before grace period ends');
+  await provider.send('evm_increaseTime', [3 * 24 * 3600 + 60]);
+  await provider.send('evm_mine', []);
+  const pb2 = await provider.getBalance(provAddr);
+  await escrow.connect(providerAgent).claimAfterDelivery(1);
+  ok((await provider.getBalance(provAddr)) - pb2 > oneBnb - ethers.parseEther('0.01'), 'provider auto-claimed after grace period');
+
+  // 5. refund after deadline when never delivered
+  const soon = (await provider.getBlock('latest')).timestamp + 120;
+  await escrow.connect(client).createJob(provAddr, ethers.ZeroAddress, oneBnb, 'Translate a doc', soon, { value: oneBnb });
+  await provider.send('evm_increaseTime', [180]);
+  await provider.send('evm_mine', []);
+  const cb = await provider.getBalance(clientAddr);
+  await escrow.connect(client).refundAfterDeadline(2);
+  ok((await provider.getBalance(clientAddr)) - cb > oneBnb - ethers.parseEther('0.01'), 'client refunded after deadline');
+
+  // 6. cancellation refunds the client
+  const later = (await provider.getBlock('latest')).timestamp + 86400;
+  await escrow.connect(client).createJob(provAddr, ethers.ZeroAddress, oneBnb, 'Audit a contract', later, { value: oneBnb });
+  const cb2 = await provider.getBalance(clientAddr);
+  await escrow.connect(providerAgent).cancelJob(3);
+  ok((await provider.getBalance(clientAddr)) - cb2 === oneBnb, 'cancelled job refunded client in full');
+
+  // 7. ERC-20 job end to end
+  const tokenAddr = await token.getAddress();
+  await token.mint(clientAddr, ethers.parseEther('500'));
+  await token.connect(client).approve(escrowAddr, ethers.parseEther('200'));
+  await escrow.connect(client).createJob(provAddr, tokenAddr, ethers.parseEther('200'), 'Data analysis', later);
+  ok((await token.balanceOf(escrowAddr)) === ethers.parseEther('200'), 'escrow holds 200 MUSD');
+  await escrow.connect(providerAgent).markDelivered(4);
+  await escrow.connect(client).release(4);
+  ok((await token.balanceOf(provAddr)) === ethers.parseEther('200'), 'provider received 200 MUSD');
+  rep = await escrow.reputationOf(provAddr);
+  ok(rep[0] === 3n, 'provider reputation: 3 completed jobs in total');
+
+  console.log(`\nALL TESTS PASSED (${passed} checks)`);
+  process.exit(0);
+}
+
+main().catch((e) => {
+  console.error('ERROR:', e.message || e);
+  process.exit(1);
+});
