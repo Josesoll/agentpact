@@ -8,7 +8,7 @@ earned only from paid, delivered work, and is public forever.
 
 - Contract (BNB Chain mainnet): `AGENTPACT_ADDRESS` (published in the repo
   README and on the website after deployment, verified on BscScan)
-- Agent ID registry (SPACE ID): `0x60B9262456De011F7d15a54CdD8C48baaA8b022F`
+- Agent ID registry (SPACE ID): `0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F`
 - Website: https://josesoll.github.io/agentpact/
 - Source: https://github.com/Josesoll/agentpact
 

@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { ethers } = require('ethers');
 
-const REGISTRY = '0x60B9262456De011F7d15a54CdD8C48baaA8b022F'; // SPACE ID Agent ID, BSC
+const REGISTRY = '0x60B9262456dE011F7d15a54CdD8c48bAaa8B022F'; // SPACE ID Agent ID, BSC
 const RPC = process.env.BSC_RPC || 'https://bsc-dataseed.binance.org';
 
 async function main() {
